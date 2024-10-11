@@ -1,0 +1,10 @@
+[package]
+name = "thermometer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ds18b20 = { git = "https://github.com/kgv/ds18b20" }
+esp-idf-svc = { version = "0.49.1", default-features = false }
+log = { version = "0.4.22", default-features = false }
+thiserror = "1.0.64"
