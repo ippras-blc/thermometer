@@ -1,140 +1,145 @@
-use self::error::Result;
-use ds18b20::{
-    scratchpad::{ConfigurationRegister, Resolution, Triggers},
-    Driver as Ds18b20Driver, MemoryCommands, RomCommands, Scratchpad,
-};
+pub use self::error::{Error, Result};
+
+use crate::scratchpad::{Resolution, Scratchpad};
 use esp_idf_svc::hal::{
     delay::Delay,
     gpio::{IOPin, InputOutput, Pin, PinDriver},
-    onewire::{OWAddress, OWCommand, OWDriver},
+    onewire::{DeviceSearch, OWAddress, OWCommand, OWDriver},
     peripheral::Peripheral,
+    rmt::RmtChannel,
 };
 use log::debug;
+use std::time::Duration;
 
-// https://github.com/esp-rs/esp-idf-hal/commit/aa0e257ffe308273ad20cfb759ae9849fb02e19d
-// https://github.com/esp-rs/esp-idf-hal/blob/4f4478718e88344082b82af455192ba10efd41c8/src/onewire.rs
-// https://github.com/esp-rs/esp-idf-hal/blob/ff343b67f37331bf0ee335af8360a37fce99761e/examples/rmt_onewire_temperature.rs#L8
+pub const FAMILY_CODE: u8 = 0x28;
 
-const RESOLUTION: Resolution = Resolution::Twelve;
-const LOW: i8 = 19;
+/// Max conversion time, up to 750 ms.
+const CONVERSION_TIME_NS: u32 = 750_000_000;
 const HIGH: i8 = 30;
+const LOW: i8 = 19;
+const RESOLUTION: Resolution = Resolution::Twelve;
+// const DEFAULT_SCRATCHPAD: Scratchpad = Scratchpad {
+//     configuration_register: ConfigurationRegister {
+//         resolution: RESOLUTION,
+//     },
+//     triggers: Triggers { low: 19, high: 30 },
+//     ..Default::default()
+// };
 
 /// Thermometer
-pub struct Thermometer<'a, T: Pin> {
+pub struct Thermometer<'a> {
     driver: OWDriver<'a>,
 }
 
 impl<'a> Thermometer<'a> {
     pub fn new(
-        pin: impl Peripheral<P = impl InputPin + OutputPin> + 'a,
+        pin: impl Peripheral<P = impl IOPin> + 'a,
         channel: impl Peripheral<P = impl RmtChannel> + 'a,
     ) -> Result<Self> {
-        let mut onewire_driver: OWDriver = OWDriver::new(pin, channel)?;
-
-        let pin_driver = PinDriver::input_output(pin)?;
+        let mut driver: OWDriver = OWDriver::new(pin, channel)?;
         let delay = Delay::new_default();
-        let mut driver = Ds18b20Driver::new(pin_driver, delay)?;
-        // ensure!(driver.initialization()?, "device not presence");
-        driver.initialization()?;
-        driver.skip_rom()?;
-        driver.write_scratchpad(Scratchpad {
-            configuration_register: ConfigurationRegister {
-                resolution: RESOLUTION,
-            },
-            triggers: Triggers {
-                low: LOW,
-                high: HIGH,
-            },
-            ..Default::default()
-        })?;
+        // driver.initialization()?;
+        // driver.skip_rom()?;
+        // driver.write_scratchpad(Scratchpad {
+        //     configuration_register: ConfigurationRegister {
+        //         resolution: RESOLUTION,
+        //     },
+        //     triggers: Triggers {
+        //         low: LOW,
+        //         high: HIGH,
+        //     },
+        //     ..Default::default()
+        // })?;
         Ok(Self { driver })
     }
 
-    pub fn read(&self, buff: &mut [u8]) -> Result<()> {
-        Ok(self.driver.read(buff)?)
+    /// Receive temperature
+    pub fn temperature(&self, address: &OWAddress) -> Result<f32> {
+        self.convert_temperature(address)?;
+        let scratchpad = self.read_scratchpad(address)?;
+        Ok(scratchpad.temperature)
     }
 
-    pub fn write(&self, data: &[u8]) -> Result<()> {
-        Ok(self.driver.write(data)?)
+    /// Read scratchpad
+    pub fn read_scratchpad(&self, address: &OWAddress) -> Result<Scratchpad> {
+        self.driver.reset()?;
+        self.memory_command(address, MemoryCommand::ReadScratchpad)?;
+        let mut buffer = [0u8; 9];
+        self.driver.read(&mut buffer)?;
+        buffer.try_into()
     }
 
-    /// Send reset pulse to the bus, and check if there are devices attached to the bus
-    ///
-    /// If there are no devices on the bus, this will result in an error.
-    pub fn reset(&self) -> Result<()> {
-        Ok(self.driver.reset(data)?)
+    pub fn write_scratchpad(&self, address: &OWAddress) -> Result<Scratchpad> {
+        self.driver.reset()?;
+        self.memory_command(address, MemoryCommand::ReadScratchpad)?;
+        let mut buffer = [0u8; 9];
+        self.driver.read(&mut buffer)?;
+        buffer.try_into()
+    }
+
+    /// Convert temperature
+    pub fn convert_temperature(&self, address: &OWAddress) -> Result<()> {
+        self.driver.reset()?;
+        self.memory_command(address, MemoryCommand::ConvertTemperature)?;
+        // delay proper time for temp conversion,
+        // assume max resolution (12-bits)
+        std::thread::sleep(Duration::from_millis(800));
+        Ok(())
     }
 
     /// Start a search for devices attached to the OneWire bus.
     pub fn search(&mut self) -> Result<DeviceSearch<'_, 'a>> {
-        Ok(self.driver.search(data)?)
+        Ok(self.driver.search()?)
     }
 
-    // PinDriver<'_, impl Pin, InputOutput>, Delay
-    pub async fn scratchpad(&mut self) -> Result<Scratchpad> {
-        debug!("scratchpad");
-        self.driver.initialization()?;
-        self.driver.skip_rom()?;
-        self.driver.convert_temperature()?;
-        self.driver.delay(RESOLUTION.conversion_time());
-        self.driver.initialization()?;
-        self.driver.skip_rom()?;
-        Ok(self.driver.read_scratchpad()?)
+    // pub fn device(&mut self) -> Result<OWAddress> {
+    //     let search = self.search()?;
+    //     let address = search.next().ok_or(Error::DeviceNotFound)?;
+    //     Ok(address)
+    // }
+
+    // Send memory command
+    fn memory_command(&self, address: &OWAddress, memory_command: MemoryCommand) -> Result<()> {
+        let mut buffer = [0; 10];
+        buffer[0] = OWCommand::MatchRom as _;
+        let address = address.address().to_le_bytes();
+        buffer[1..9].copy_from_slice(&address);
+        buffer[9] = memory_command as _;
+        Ok(self.driver.write(&buffer)?)
     }
 
-    pub async fn temperature(&mut self) -> Result<f32> {
-        debug!("temperature");
-        let scratchpad = self.scratchpad().await?;
-        Ok(scratchpad.temperature)
-    }
-}
+    // pub async fn scratchpad(&mut self) -> Result<Scratchpad> {
+    //     debug!("scratchpad");
+    //     self.driver.initialization()?;
+    //     self.driver.skip_rom()?;
+    //     self.driver.convert_temperature()?;
+    //     self.driver.delay(RESOLUTION.conversion_time());
+    //     self.driver.initialization()?;
+    //     self.driver.skip_rom()?;
+    //     Ok(self.driver.read_scratchpad()?)
+    // }
 
-fn send_command<'a>(bus: &OWDriver, address: &OWAddress, command: Command) -> Result<(), EspError> {
-    let mut buf = [0; 10];
-    buf[0] = OWCommand::MatchRom as _;
-    let address = address.address().to_le_bytes();
-    buf[1..9].copy_from_slice(&address);
-    buf[9] = command as _;
-
-    bus.write(&buf)
-}
-
-fn get_temperature<'a>(bus: &OWDriver, address: &OWAddress) -> Result<f32, EspError> {
-    bus.reset()?;
-
-    send_command(bus, address, Command::ReadScratch)?;
-
-    let mut buf = [0u8; 10];
-    bus.read(&mut buf)?;
-    let lsb = buf[0];
-    let msb = buf[1];
-
-    let temperature: u16 = (u16::from(msb) << 8) | u16::from(lsb);
-    Ok(f32::from(temperature) / 16.0)
-}
-
-fn trigger_temp_conversion<'a>(bus: &OWDriver, address: &OWAddress) -> Result<(), EspError> {
-    // reset bus and check if the ds18b20 is present
-    bus.reset()?;
-
-    send_command(bus, address, Command::ConvertTemp)?;
-
-    // delay proper time for temp conversion,
-    // assume max resolution (12-bits)
-    std::thread::sleep(Duration::from_millis(800));
-
-    Ok(())
+    // pub async fn temperature(&mut self) -> Result<f32> {
+    //     debug!("temperature");
+    //     let scratchpad = self.scratchpad().await?;
+    //     Ok(scratchpad.temperature)
+    // }
 }
 
 #[allow(dead_code)]
 #[repr(u8)]
-enum Command {
-    ConvertTemp = 0x44,
-    WriteScratch = 0x4E,
-    ReadScratch = 0xBE,
+enum MemoryCommand {
+    WriteScratchpad = 0x4E,
+    ReadScratchpad = 0xBE,
+    CopyScratchpad = 0x48,
+    ConvertTemperature = 0x44,
+    RecallE2Memory = 0xB8,
+    ReadPowerSupply = 0xB4,
 }
 
+pub mod crc8;
 pub mod error;
+pub mod scratchpad;
 
 // async fn temperature(
 //     thermometer: &mut Ds18b20Driver<PinDriver<'_, impl Pin, InputOutput>, Delay>,

@@ -1,4 +1,7 @@
-use ds18b20::error::Ds18b20Error;
+use crate::{
+    scratchpad::{ELEVEN, NINE, TEN, TWELVE},
+    FAMILY_CODE,
+};
 use esp_idf_svc::{hal::gpio::GpioError, sys::EspError};
 use thiserror::Error;
 
@@ -10,15 +13,16 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 pub enum Error {
     #[error(transparent)]
     Esp(#[from] EspError),
-    #[error(transparent)]
-    Ds18b20(#[from] ds18b20::Error<GpioError>),
+    #[error("device not found")]
+    DeviceNotFound,
+    #[error("unexpected configuration register {{ configuration_register={configuration_register:b}, expected=[{NINE:b}, {TEN:b}, {ELEVEN:b}, {TWELVE:b}] }}")]
+    UnexpectedConfigurationRegister { configuration_register: u8 },
+    #[error("unexpected CRC {{ crc={crc}, expected={expected} }}")]
+    UnexpectedCrc { crc: u8, expected: u8 },
 }
 
 impl Error {
     pub fn is_crc(&self) -> bool {
-        matches!(
-            self,
-            Self::Ds18b20(ds18b20::Error::Ds18b20(Ds18b20Error::UnexpectedCrc { .. })),
-        )
+        matches!(self, Self::UnexpectedCrc { .. })
     }
 }
