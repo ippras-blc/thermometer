@@ -10,7 +10,9 @@ use esp_idf_svc::hal::{
 };
 use log::debug;
 
+// https://github.com/esp-rs/esp-idf-hal/commit/aa0e257ffe308273ad20cfb759ae9849fb02e19d
 // https://github.com/esp-rs/esp-idf-hal/blob/4f4478718e88344082b82af455192ba10efd41c8/src/onewire.rs
+// https://github.com/esp-rs/esp-idf-hal/blob/ff343b67f37331bf0ee335af8360a37fce99761e/examples/rmt_onewire_temperature.rs#L8
 
 const RESOLUTION: Resolution = Resolution::Twelve;
 const LOW: i8 = 19;
@@ -59,6 +61,16 @@ impl<'a, T: IOPin> Thermometer<'a, T> {
         let scratchpad = self.scratchpad().await?;
         Ok(scratchpad.temperature)
     }
+}
+
+fn ds18b20_send_command<'a>(address: &OWAddress, bus: &OWDriver, cmd: u8) -> Result<(), EspError> {
+    let mut buf = [0; 10];
+    buf[0] = OWCommand::MatchRom as _;
+    let addr = address.address().to_le_bytes();
+    buf[1..9].copy_from_slice(&addr);
+    buf[9] = cmd;
+
+    bus.write(&buf)
 }
 
 pub mod error;
