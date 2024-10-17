@@ -6,6 +6,7 @@ use ds18b20::{
 use esp_idf_svc::hal::{
     delay::Delay,
     gpio::{IOPin, InputOutput, Pin, PinDriver},
+    onewire::{OWAddress, OWCommand, OWDriver},
     peripheral::Peripheral,
 };
 use log::debug;
@@ -20,11 +21,16 @@ const HIGH: i8 = 30;
 
 /// Thermometer
 pub struct Thermometer<'a, T: Pin> {
-    driver: Ds18b20Driver<PinDriver<'a, T, InputOutput>, Delay>,
+    driver: OWDriver<'a>,
 }
 
-impl<'a, T: IOPin> Thermometer<'a, T> {
-    pub fn new(pin: impl Peripheral<P = T> + 'a) -> Result<Self> {
+impl<'a> Thermometer<'a> {
+    pub fn new(
+        pin: impl Peripheral<P = impl InputPin + OutputPin> + 'a,
+        channel: impl Peripheral<P = impl RmtChannel> + 'a,
+    ) -> Result<Self> {
+        let mut onewire_driver: OWDriver = OWDriver::new(pin, channel)?;
+
         let pin_driver = PinDriver::input_output(pin)?;
         let delay = Delay::new_default();
         let mut driver = Ds18b20Driver::new(pin_driver, delay)?;
@@ -42,6 +48,26 @@ impl<'a, T: IOPin> Thermometer<'a, T> {
             ..Default::default()
         })?;
         Ok(Self { driver })
+    }
+
+    pub fn read(&self, buff: &mut [u8]) -> Result<()> {
+        Ok(self.driver.read(buff)?)
+    }
+
+    pub fn write(&self, data: &[u8]) -> Result<()> {
+        Ok(self.driver.write(data)?)
+    }
+
+    /// Send reset pulse to the bus, and check if there are devices attached to the bus
+    ///
+    /// If there are no devices on the bus, this will result in an error.
+    pub fn reset(&self) -> Result<()> {
+        Ok(self.driver.reset(data)?)
+    }
+
+    /// Start a search for devices attached to the OneWire bus.
+    pub fn search(&mut self) -> Result<DeviceSearch<'_, 'a>> {
+        Ok(self.driver.search(data)?)
     }
 
     // PinDriver<'_, impl Pin, InputOutput>, Delay
@@ -63,14 +89,49 @@ impl<'a, T: IOPin> Thermometer<'a, T> {
     }
 }
 
-fn ds18b20_send_command<'a>(address: &OWAddress, bus: &OWDriver, cmd: u8) -> Result<(), EspError> {
+fn send_command<'a>(bus: &OWDriver, address: &OWAddress, command: Command) -> Result<(), EspError> {
     let mut buf = [0; 10];
     buf[0] = OWCommand::MatchRom as _;
-    let addr = address.address().to_le_bytes();
-    buf[1..9].copy_from_slice(&addr);
-    buf[9] = cmd;
+    let address = address.address().to_le_bytes();
+    buf[1..9].copy_from_slice(&address);
+    buf[9] = command as _;
 
     bus.write(&buf)
+}
+
+fn get_temperature<'a>(bus: &OWDriver, address: &OWAddress) -> Result<f32, EspError> {
+    bus.reset()?;
+
+    send_command(bus, address, Command::ReadScratch)?;
+
+    let mut buf = [0u8; 10];
+    bus.read(&mut buf)?;
+    let lsb = buf[0];
+    let msb = buf[1];
+
+    let temperature: u16 = (u16::from(msb) << 8) | u16::from(lsb);
+    Ok(f32::from(temperature) / 16.0)
+}
+
+fn trigger_temp_conversion<'a>(bus: &OWDriver, address: &OWAddress) -> Result<(), EspError> {
+    // reset bus and check if the ds18b20 is present
+    bus.reset()?;
+
+    send_command(bus, address, Command::ConvertTemp)?;
+
+    // delay proper time for temp conversion,
+    // assume max resolution (12-bits)
+    std::thread::sleep(Duration::from_millis(800));
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+#[repr(u8)]
+enum Command {
+    ConvertTemp = 0x44,
+    WriteScratch = 0x4E,
+    ReadScratch = 0xBE,
 }
 
 pub mod error;
