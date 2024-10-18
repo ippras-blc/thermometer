@@ -16,13 +16,14 @@ pub enum Error {
     #[error("device not found")]
     DeviceNotFound,
     #[error("unexpected configuration register {{ configuration_register={configuration_register:b}, expected=[{NINE:b}, {TEN:b}, {ELEVEN:b}, {TWELVE:b}] }}")]
-    UnexpectedConfigurationRegister { configuration_register: u8 },
-    #[error("unexpected CRC {{ crc={crc}, expected={expected} }}")]
-    UnexpectedCrc { crc: u8, expected: u8 },
+    ConfigurationRegister { configuration_register: u8 },
+    #[error(transparent)]
+    Crc(#[from] CrcError),
 }
 
-impl Error {
-    pub fn is_crc(&self) -> bool {
-        matches!(self, Self::UnexpectedCrc { .. })
-    }
+/// The CRC error
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("unexpected CRC {{ crc={crc}, expected=0 }}")]
+pub struct CrcError {
+    pub(crate) crc: u8,
 }
