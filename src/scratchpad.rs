@@ -9,8 +9,12 @@ pub(crate) const TWELVE: u8 = 0b01111111;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Scratchpad {
     pub temperature: f32,
+    /// Alarm high trigger register (TH)
+    pub alarm_high_trigger_register: i8,
+    /// Alarm low trigger register (TL)
+    pub alarm_low_trigger_register: i8,
+    /// Configuration register
     pub configuration_register: ConfigurationRegister,
-    pub triggers: Triggers,
     pub crc: u8,
 }
 
@@ -79,13 +83,6 @@ impl Resolution {
             Resolution::Twelve => CONVERSION_TIME_NS,
         }) as _
     }
-}
-
-/// Temperature triggers: high and low.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Triggers {
-    pub high: i8,
-    pub low: i8,
 }
 
 pub fn temperature(msb: u8, lsb: u8, resolution: Resolution) -> f32 {

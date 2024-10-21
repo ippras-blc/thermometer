@@ -9,7 +9,7 @@ use log::error;
 use std::thread::sleep;
 use thermometer::{
     scratchpad::{ConfigurationRegister, Resolution, Scratchpad, Triggers},
-    Ds18b20Driver, Error, MemoryCommands, Result,
+    Ds18b20Driver, Error, Result,
 };
 
 // 0x230000046eafbc28
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     let mut thermometer = Ds18b20Driver::new(peripherals.pins.gpio10, peripherals.rmt.channel0)?;
     error!("Thermometer initialized");
 
-    let mut search = thermometer.search()?;
+    let mut search = thermometer.driver.search()?;
     let address = search
         .filter_map(|address| address.ok())
         .find(|address| address.address() == 0x230000046eafbc28)
@@ -36,34 +36,50 @@ fn main() -> Result<()> {
         "Found address: {address:x?}, family code = {}",
         address.family_code(),
     );
-    let scratchpad = thermometer.read_scratchpad(&address)?;
+    let scratchpad = thermometer
+        .initialization()?
+        .match_rom(&address)?
+        .read_scratchpad()?;
     println!("scratchpad: {scratchpad:?}");
-    thermometer.write_scratchpad(
-        &address,
-        &Scratchpad {
-            triggers: Triggers { low: 1, high: 30 },
+    thermometer
+        .initialization()?
+        .match_rom(&address)?
+        .write_scratchpad(&Scratchpad {
+            alarm_high_trigger_register: 30,
+            alarm_low_trigger_register: 1,
             configuration_register: ConfigurationRegister {
                 resolution: Resolution::Twelve,
             },
             ..Default::default()
-        },
-    )?;
-    let scratchpad = thermometer.read_scratchpad(&address)?;
+        })?;
+    let scratchpad = thermometer
+        .initialization()?
+        .match_rom(&address)?
+        .read_scratchpad()?;
     println!("scratchpad: {scratchpad:?}");
-    let scratchpad = thermometer.read_rom()?;
-    println!("read_rom: {scratchpad:?}");
 
-    loop {
-        let temperature = thermometer.temperature(&address)?;
-        println!("temperature: {temperature}");
-        Delay::new_default();
-    }
+    let t = thermometer.initialization()?;
+    let a = thermometer.initialization()?.match_rom(&address)?;
+    t.read_rom();
+
+    // let scratchpad = thermometer.read_scratchpad(&address)?;
+    // // thermometer.initialization()?;
+    // println!("scratchpad: {scratchpad:?}");
+    // let scratchpad = thermometer.read_rom()?;
+    // println!("read_rom: {scratchpad:?}");
+
+    // loop {
+    //     let temperature = thermometer.temperature(&address)?;
+    //     println!("temperature: {temperature}");
+    //     Delay::new_default();
+    // }
     // loop {
     //     trigger_temp_conversion(&bus, &address)?;
     //     let temperature = get_temperature(&bus, &address)?;
     //     println!("Temperature: {}", temperature);
     //     FreeRtos::delay_ms(3000);
     // }
+    Ok(())
 }
 
 // mod onewire;

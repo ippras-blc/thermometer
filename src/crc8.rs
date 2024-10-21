@@ -2,20 +2,26 @@ use crate::error::CrcError;
 
 /// Calculates the crc8 of the input data.
 pub fn calculate(data: &[u8]) -> u8 {
-    append(0, data)
+    calculate_with_initial(0, data)
 }
 
 /// Calculates the crc8 of the input data with init value.
-pub fn append(mut crc: u8, data: &[u8]) -> u8 {
-    // `CRC = X^8 + X^5 + X^4 + X^0`
+///
+/// Feedback polynomial: `X^8 + X^5 + X^4 + X^0`
+/// LFSR (Galois configuration):
+///                                                         v     input bit
+/// [7]->[6]->[5]->[4]->(XOR)->[3]->(XOR)->[2]->[1]->[0]->(XOR)-> feedback bit
+///  ^                    ^           ^                           feedback mask
+pub fn calculate_with_initial(mut crc: u8, data: &[u8]) -> u8 {
     for byte in data {
         crc ^= byte;
         for _ in 0..u8::BITS {
-            let bit = crc & 0x01;
+            // feedback bit at each iteration step
+            let bit = crc & 0b1;
             crc >>= 1;
+            // feedback mask (if feedback bit)
             if bit != 0 {
-                // 0b1000_1100
-                crc ^= 0x8C;
+                crc ^= 0b1000_1100;
             }
         }
     }
